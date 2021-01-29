@@ -1,0 +1,8 @@
+#!/bin/bash
+if [[ ! -f ./venv ]]; then
+	python -m venv venv
+fi
+source environment
+sudo apt-get --assume-yes install libsm6 libxrender-dev
+pip install -U pip
+pip install -r requirements.txt

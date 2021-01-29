@@ -1,0 +1,2 @@
+#!/bin/bash
+python -m gym.utils.play --env PongNoFrameskip-v4

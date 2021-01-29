@@ -1,0 +1,7 @@
+#!/bin/bash
+source environment
+game="$1"
+checkpoint="$2"
+numSteps="${3:-100}"
+echo "game: $game, checkpoint: $checkpoint, numSteps: $numSteps"
+python -m dopamine.utils.example_viz --agent='rainbow' --game="$game" --num_steps=$numSteps --root_dir="./models/rainbow/$game" --restore_checkpoint="./models/rainbow/$game/checkpoints/tf_ckpt-$checkpoint"

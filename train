@@ -1,0 +1,10 @@
+#!/bin/bash
+source environment
+
+agent="${1:-rainbow}"
+game="${2:-Pong}"
+
+echo "Agent: $agent"
+echo "Game: $game"
+
+python -um dopamine.discrete_domains.train --base_dir "./models/$agent/$game" --gin_files "dopamine/agents/$agent/configs/$agent.gin" --gin_bindings "atari_lib.create_atari_environment.game_name='$game'" "$@"
