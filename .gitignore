@@ -2,3 +2,4 @@ __pycache__/
 /venv/
 /hostvenv/
 /models/
+/agent_viz/
