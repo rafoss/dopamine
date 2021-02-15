@@ -21,6 +21,9 @@ from __future__ import print_function
 import os
 import sys
 import time
+import string
+import random
+import pathlib
 
 from absl import logging
 
@@ -38,6 +41,8 @@ from dopamine.jax.agents.rainbow import rainbow_agent as jax_rainbow_agent
 
 import numpy as np
 import tensorflow as tf
+
+from tensorflow.train import Example, Features, Feature, BytesList, Int64List, FloatList
 
 import gin.tf
 
@@ -166,7 +171,8 @@ class Runner(object):
                training_steps=250000,
                evaluation_steps=125000,
                max_steps_per_episode=27000,
-               clip_rewards=True):
+               clip_rewards=True,
+               store_episodes=False):
     """Initialize the Runner object in charge of running a full experiment.
 
     Args:
@@ -185,6 +191,7 @@ class Runner(object):
       max_steps_per_episode: int, maximum number of steps after which an episode
         terminates.
       clip_rewards: bool, whether to clip rewards in [-1, 1].
+      save_episodes: bool, whether to store all episodes as tfrecords.
 
     This constructor will take the following actions:
     - Initialize an environment.
@@ -205,6 +212,7 @@ class Runner(object):
     self._max_steps_per_episode = max_steps_per_episode
     self._base_dir = base_dir
     self._clip_rewards = clip_rewards
+    self._store_episodes = store_episodes
     self._create_directories()
     self._summary_writer = tf.compat.v1.summary.FileWriter(self._base_dir)
 
@@ -226,6 +234,9 @@ class Runner(object):
     """Create necessary sub-directories."""
     self._checkpoint_dir = os.path.join(self._base_dir, 'checkpoints')
     self._logger = logger.Logger(os.path.join(self._base_dir, 'logs'))
+    if self._store_episodes:
+      self._episode_dir = os.path.join(self._base_dir, 'episodes')
+      pathlib.Path(self._episode_dir).mkdir(parents=True, exist_ok=True)
 
   def _initialize_checkpointer_and_maybe_resume(self, checkpoint_file_prefix):
     """Reloads the latest checkpoint if it exists.
@@ -275,6 +286,7 @@ class Runner(object):
       action: int, the initial action chosen by the agent.
     """
     initial_observation = self._environment.reset()
+    self._episode_transitions = []
     return self._agent.begin_episode(initial_observation)
 
   def _run_one_step(self, action):
@@ -297,6 +309,15 @@ class Runner(object):
       reward: float, the last reward from the environment.
     """
     self._agent.end_episode(reward)
+
+  def _serialize_episode_observation(self, t):
+    return Example(features=Features(feature={
+      'observation': Feature(bytes_list=BytesList(value=[tf.io.serialize_tensor(t['observation']).eval(session=self._sess)])),
+      'reward': Feature(float_list=FloatList(value=[t['reward']])),
+      'is_terminal': Feature(int64_list=Int64List(value=[t['is_terminal']])),
+      'steps': Feature(int64_list=Int64List(value=[t['steps']])),
+      'total_reward': Feature(float_list=FloatList(value=[t['total_reward']]))
+    })).SerializeToString()
 
   def _run_one_episode(self):
     """Executes a full trajectory of the agent interacting with the environment.
@@ -321,6 +342,15 @@ class Runner(object):
         # Perform reward clipping.
         reward = np.clip(reward, -1, 1)
 
+      if self._store_episodes:
+        self._episode_transitions.append({
+          'observation': observation,
+          'reward': reward,
+          'is_terminal': is_terminal,
+          'steps': step_number,
+          'total_reward': total_reward
+        })
+
       if (self._environment.game_over or
           step_number == self._max_steps_per_episode):
         # Stop the run loop once we reach the true end of episode.
@@ -334,6 +364,20 @@ class Runner(object):
         action = self._agent.step(reward, observation)
 
     self._end_episode(reward)
+
+    # Add the episode to the transition dataset
+    if self._store_episodes:
+      base_path = pathlib.Path(self._episode_dir)
+      suffix = ''
+      while True:
+        path = base_path / f"episode-{self._num_episodes}.steps-{step_number}.reward-{total_reward}{suffix}.tfrecord"
+        if not path.exists():
+          break
+        suffix = '.' + ''.join(random.choices(string.ascii_uppercase + string.digits, k=5))
+      
+      with tf.io.TFRecordWriter(str(path), 'GZIP') as writer:
+        for t in self._episode_transitions:
+          writer.write(self._serialize_episode_observation(t))
 
     return step_number, total_reward
 
@@ -354,7 +398,7 @@ class Runner(object):
         returns (float), and the number of episodes performed (int).
     """
     step_count = 0
-    num_episodes = 0
+    self._num_episodes = 0
     sum_returns = 0.
 
     while step_count < min_steps:
@@ -365,14 +409,14 @@ class Runner(object):
       })
       step_count += episode_length
       sum_returns += episode_return
-      num_episodes += 1
+      self._num_episodes += 1
       # We use sys.stdout.write instead of logging so as to flush frequently
       # without generating a line break.
       sys.stdout.write('Steps executed: {} '.format(step_count) +
                        'Episode length: {} '.format(episode_length) +
                        'Return: {}\r'.format(episode_return))
       sys.stdout.flush()
-    return step_count, sum_returns, num_episodes
+    return step_count, sum_returns, self._num_episodes
 
   def _run_train_phase(self, statistics):
     """Run training phase.
